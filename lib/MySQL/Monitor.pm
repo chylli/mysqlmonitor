@@ -1,12 +1,13 @@
 package MySQL::Monitor;
 
-use 5.006;
+use 5.16.2;
 use strict;
 use warnings FATAL => 'all';
+use Getopt::Long;
 
 =head1 NAME
 
-MySQL::Monitor - The great new MySQL::Monitor!
+MySQL::Monitor - Monitor mysql status and customed status
 
 =head1 VERSION
 
@@ -19,34 +20,251 @@ our $VERSION = '0.01';
 
 =head1 SYNOPSIS
 
-Quick summary of what the module does.
-
+mysqlmonitor is a script to monitor mysql status and customed status which is a perl clone of mycheckpoint L<code.openark.org/forge/mycheckpoint>.
 Perhaps a little code snippet.
 
-    use MySQL::Monitor;
+=cut
 
-    my $foo = MySQL::Monitor->new();
-    ...
+my $help_msg = <<HELP;
+Usage: mysqlmonitor [options] [command [, command ...]]
 
-=head1 EXPORT
+mysqlmonitor is a script to monitor mysql status and customed status which is a perl clone of mycheckpoint L<code.openark.org/forge/mycheckpoint>.
 
-A list of functions that can be exported.  You can delete this section
-if you don't export anything, such as for a purely object-oriented module.
+See online documentation on L<http://code.openark.org/forge/mycheckpoint/documentation>
+
+Available commands:
+  http
+  deploy
+  email_brief_report
+
+Options:
+  -h, --help            show this help message and exit
+  -u USER, --user=USER  MySQL user
+  -H HOST, --host=HOST  MySQL host. Written to by this application (default:
+                        localhost)
+  -p PASSWORD, --password=PASSWORD
+                        MySQL password
+  --ask-pass            Prompt for password
+  -P PORT, --port=PORT  TCP/IP port (default: 3306)
+  -S SOCKET, --socket=SOCKET
+                        MySQL socket file. Only applies when host is localhost
+                        (default: /var/run/mysqld/mysql.sock)
+  --monitored-host=MONITORED_HOST
+                        MySQL monitored host. Specity this when the host
+                        you're monitoring is not the same one you're writing
+                        to (default: none, host specified by --host is both
+                        monitored and written to)
+  --monitored-port=MONITORED_PORT
+                        Monitored host's TCP/IP port (default: 3306). Only
+                        applies when monitored-host is specified
+  --monitored-socket=MONITORED_SOCKET
+                        Monitored host MySQL socket file. Only applies when
+                        monitored-host is specified and is localhost (default:
+                        /var/run/mysqld/mysql.sock)
+  --monitored-user=MONITORED_USER
+                        MySQL monitored server user name. Only applies when
+                        monitored-host is specified (default: same as user)
+  --monitored-password=MONITORED_PASSWORD
+                        MySQL monitored server password. Only applies when
+                        monitored-host is specified (default: same as
+                        password)
+  --defaults-file=DEFAULTS_FILE
+                        Read from MySQL configuration file. Overrides all
+                        other options
+  -d DATABASE, --database=DATABASE
+                        Database name (required unless query uses fully
+                        qualified table names)
+  --skip-aggregation    Skip creating and maintaining aggregation tables
+  --rebuild-aggregation
+                        Completely rebuild (drop, create and populate)
+                        aggregation tables upon deploy
+  --purge-days=PURGE_DAYS
+                        Purge data older than specified amount of days
+                        (default: 182)
+  --disable-bin-log     Disable binary logging (binary logging enabled by
+                        default)
+  --skip-disable-bin-log
+                        Skip disabling the binary logging (this is default
+                        behaviour; binary logging enabled by default)
+  --skip-check-replication
+                        Skip checking on master/slave status variables
+  -o, --force-os-monitoring
+                        Monitor OS even if monitored host does does nto appear
+                        to be the local host. Use when you are certain the
+                        monitored host is local
+  --skip-alerts         Skip evaluating alert conditions as well as sending
+                        email notifications
+  --skip-emails         Skip sending email notifications
+  --force-emails        Force sending email notifications even if there's
+                        nothing wrong
+  --skip-custom         Skip custom query execution and evaluation
+  --skip-defaults-file  Do not read defaults file. Overrides --defaults-file
+                        and ignores /etc/mycheckpoint.cnf
+  --chart-width=CHART_WIDTH
+                        Chart image width (default: 370, min value: 150)
+  --chart-height=CHART_HEIGHT
+                        Chart image height (default: 180, min value: 100)
+  --chart-service-url=CHART_SERVICE_URL
+                        Url to Google charts API (default:
+                        http://chart.apis.google.com/chart)
+  --smtp-host=SMTP_HOST
+                        SMTP mail server host name or IP
+  --smtp-from=SMTP_FROM
+                        Address to use as mail sender
+  --smtp-to=SMTP_TO     Comma delimited email addresses to send emails to
+  --http-port=HTTP_PORT
+                        Socket to listen on when running as web server
+                        (argument is http)
+  --debug               Print stack trace on error
+  -v, --verbose         Print user friendly messages
+  --version             Prompt version number
+HELP
+
+=head1 ATTRIBUTES
+
+=cut
+
 
 =head1 SUBROUTINES/METHODS
 
-=head2 function1
+=head2 new
 
 =cut
 
-sub function1 {
+sub new {
+    my $class = shift;
+
+    my %options = 
+      (
+       "user"=> "",
+       "host"=> "localhost",
+       "password"=> "",
+       "prompt_password"=> 0,
+       "port"=> 3306,
+       "socket"=> "/var/run/mysqld/mysql.sock",
+       "monitored_host"=> undef,
+       "monitored_port"=> 3306,
+       "monitored_socket"=> undef,
+       "monitored_user"=> undef,
+       "monitored_password"=> undef,
+       "defaults_file"=> "",
+       "database"=> "mycheckpoint",
+       "skip_aggregation"=> 0,
+       "rebuild_aggregation"=> 0,
+       "purge_days"=> 182,
+       "disable_bin_log"=> 0,
+       "skip_check_replication"=> 0,
+       "force_os_monitoring"=> 0,
+       "skip_alerts"=> 0,
+       "skip_emails"=> 0,
+       "force_emails"=> 0,
+       "skip_custom"=> 0,
+       "skip_defaults_file"=> 0,
+       "chart_width"=> 370,
+       "chart_height"=> 180,
+       "chart_service_url"=> "http=>//chart.apis.google.com/chart",
+       "smtp_host"=> undef,
+       "smtp_from"=> undef,
+       "smtp_to"=> undef,
+       "http_port"=> 12306,
+       "debug"=> 0,
+       "verbose"=> 0,
+       "version"=> 0,
+       );
+
+    return bless {options => \%options}, $class;
 }
 
-=head2 function2
+=head2 parse_options
+
+parse the options, if there is a 'help' or 'man', print help info and exit
 
 =cut
 
-sub function2 {
+sub parse_options {
+    my $self = shift;
+
+    local @ARGV ;
+    push @ARGV, @_;
+
+    my $options = $self->{options};
+
+    Getopt::Long::Configure("bundling");
+    Getopt::Long::GetOptions
+        (
+         'h|help' => sub {$self->show_help},
+         'H|host=s' => \$options->{host},
+         'p|password=s' => \$options->{password},
+         'ask-pass' => \$options->{prompt_password},
+         'P|port=i' => \$options->{port},
+         'S|socket=s' => \$options->{socket},
+         'monitored-host=s' => \$options->{monitored_host},
+         'monitored-port=s' => \$options->{monitored_host},
+         'monitored-socket=s' => \$options->{monitored_socket},
+         'monitored-user=s' => \$options->{monitored_user},
+         'monitored-password=s' => \$options->{monitored_password},
+         'defaults-file=s' => \$options->{defaults_file},
+         'd|database=s' => \$options->{database},
+         'skip-aggregation' => \$options->{skip_aggregation},
+         'rebuild-aggregation' => \$options->{rebuild_aggregation},
+         'purge-days=i' => \$options->{purge_days},
+         'disable-bin-log' => \$options->{disable_bin_log},
+         'skip-disable-bin-log' => sub {$options->{disable_bin_log} = 0},
+         'skip-check-replication' => \$options->{skip_check_replication},
+         'o|force-os-monitoring' => \$options->{force_os_monitoring},
+         'skip-alerts' => \$options->{skip_alerts},
+         'skip-emails' => \$options->{skip_emails},
+         'force-emails' => \$options->{force_emails},
+         'skip-custom' => \$options->{skip_custom},
+         'skip-defaults-file' => \$options->{skip_defaults_file},
+         'chart-width=i' => \$options->{chart_width},
+         'chart-height=i' => \$options->{chart_height},
+         'chart-service-url=s' => \$options->{chart_service_url},
+         'smtp-host=s' => \$options->{smtp_host},
+         'smtp-from=s' => \$options->{smtp_from},
+         'smtp-to=s' => \$options->{smtp_to},
+         'http-port=i' => \$options->{http_port},
+         'debug' => \$options->{debug},
+         'v|verbose' => \$options->{verbose},
+         'version' => \$options->{version},
+
+        );
+
+
+    $self->{args} = \@ARGV;
+}
+
+
+=head2 show_help
+
+print help information.
+
+=cut
+
+sub show_help {
+    my $self = shift;
+    print $help_msg, "\n";
+    exit 0;
+}
+
+sub stub {
+    my $self = shift;
+    my $option = shift;
+    print "option $option not implemented yet\n";
+    exit 0;
+}
+
+=head2 run
+
+The program entrance.
+
+=cut
+
+sub run {
+    my $self = shift;
+    $self->parse_options(@_);
+    # TODO
+    # do the concreate things
 }
 
 =head1 AUTHOR

@@ -1,4 +1,4 @@
-use 5.006;
+use 5.16.2;
 use strict;
 use warnings FATAL => 'all';
 use ExtUtils::MakeMaker;
@@ -10,7 +10,7 @@ WriteMakefile(
     ABSTRACT_FROM    => 'lib/MySQL/Monitor.pm',
     LICENSE          => 'FreeBSD',
     PL_FILES         => {},
-    MIN_PERL_VERSION => 5.006,
+    MIN_PERL_VERSION => 5.16.2,
     CONFIGURE_REQUIRES => {
         'ExtUtils::MakeMaker' => 0,
     },
