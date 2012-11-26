@@ -254,6 +254,30 @@ sub stub {
     exit 0;
 }
 
+=head2 verbose
+
+print messages when program is in verbose mode.
+
+=cut
+
+sub verbose {
+    my $self = shift;
+    my ($message, $force_verbose) = @_;
+    print "-- $message\n" if $self->{options}{verbose} || $force_verbose;
+}
+
+=head2 print_error
+
+=cut
+
+sub print_error {
+    my $self = shift;
+    my $message = shift;
+    print STDERR "-- ERROR: $message\n";
+}
+
+
+
 =head2 run
 
 The program entrance.
@@ -263,6 +287,12 @@ The program entrance.
 sub run {
     my $self = shift;
     $self->parse_options(@_);
+
+    $self->verbose("mysqlmonitor version $VERSION. Copyright (c) 2012-2013 by Chylli", $self->{options}{version});
+
+
+
+
     # TODO
     # do the concreate things
 }

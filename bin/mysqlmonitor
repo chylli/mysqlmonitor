@@ -1,0 +1,9 @@
+#!/usr/bin/perl -w
+
+use 5.16.2;
+use strict;
+use warnings;
+use MySQL::Monitor;
+
+my $monitor = MySQL::Monitor->new;
+$monitor->run(@ARGV);
