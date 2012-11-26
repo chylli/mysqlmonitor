@@ -4,6 +4,9 @@ use 5.16.2;
 use strict;
 use warnings FATAL => 'all';
 use Getopt::Long;
+use DBI;
+use Term::ReadKey;
+use Smart::Comments;
 
 =head1 NAME
 
@@ -193,6 +196,7 @@ sub parse_options {
     Getopt::Long::GetOptions
         (
          'h|help' => sub {$self->show_help},
+         'u|user=s' => \$options->{user},
          'H|host=s' => \$options->{host},
          'p|password=s' => \$options->{password},
          'ask-pass' => \$options->{prompt_password},
@@ -217,8 +221,8 @@ sub parse_options {
          'force-emails' => \$options->{force_emails},
          'skip-custom' => \$options->{skip_custom},
          'skip-defaults-file' => \$options->{skip_defaults_file},
-         'chart-width=i' => \$options->{chart_width},
-         'chart-height=i' => \$options->{chart_height},
+         'chart-width=i' => sub {shift; my $w = shift; $options->{chart_width} = $w > 150 ? $w : 150},
+         'chart-height=i' => sub {shift; my $h = shift; $options->{chart_height} = $h > 100 ? $h : 100},
          'chart-service-url=s' => \$options->{chart_service_url},
          'smtp-host=s' => \$options->{smtp_host},
          'smtp-from=s' => \$options->{smtp_from},
@@ -278,6 +282,50 @@ sub print_error {
 
 
 
+=head2 open_connections
+
+open monitored and wrote dbi
+
+return dbh of monitored and wrote db.
+
+=cut
+
+sub open_connections{
+    my $self = shift;
+    my $options = $self->{options};
+    my $password = $options->{password};
+    if ($options->{prompt_password}) {
+        print "Password:";
+        ReadMode 'noecho';
+        $password = ReadLine 0;
+        chomp $password;
+        ReadMode 'restore';
+        $options->{password} = $password;
+    }
+
+    my $dsn = "DBI:mysql:database=$options->{database};host=$options->{host};port=$options->{port};mysql_socket=$options->{socket}";
+    my $write_connection = DBI->connect($dsn, $options->{user}, $password);
+
+    return ($write_connection, $write_connection) unless $options->{monitored_host};
+
+    $self->verbose("monitored host is: $options->{monitored_host}");
+
+    if (! $options->{monitored_user}) {
+        $options->{monitored_user} = $options->{user};
+        $options->{monitored_password} = $options->{password};
+        $self->verbose("monitored host credentials undefined; using write host credentials")
+    }
+    if (not $options->{monitored_socket}){
+        $options->{monitored_socket} = $options->{socket}
+    }
+    
+    # Need to open a read connection
+    $dsn = "DBI:mysql:database=test;host=$options->{monitored_host};port=$options->{monitored_port};mysql_socket=$options->{monitored_socket}";
+    my $monitored_connection = DBI->connect($dsn, $options->{monitored_user}, $options->{monitored_password});
+    return $monitored_connection, $write_connection;
+
+}
+
 =head2 run
 
 The program entrance.
@@ -290,8 +338,36 @@ sub run {
 
     $self->verbose("mysqlmonitor version $VERSION. Copyright (c) 2012-2013 by Chylli", $self->{options}{version});
 
+    my $options = $self->{options};
+    my $database_name = $options->{database};
+    my $table_name = "status_variables";
 
+    die "No database specified. Specify with -d or --database\n" unless $database_name;
+    die "purge-days must be at least 1\n" if $options->{purge_days} < 1;
+    $self->verbose("database is $database_name");
 
+    my $should_deploy;
+    my $should_email_brief_report;
+    my $should_serve_http;
+
+    for my $arg (@{$self->{args}}) {
+        if ($arg eq 'deploy') {
+            $self->verbose("Deploy requested. Will deploy");
+            $should_deploy = 1;
+        }
+        elsif ($arg eq 'email_brief_report') {
+            $should_email_brief_report = 1;
+        }
+        elsif ($arg eq 'http') {
+            $should_serve_http = 1;
+        }
+        else {
+            die "Unkown command: $arg\n";
+        }
+    }
+
+    # Open connections. From this point and on, database access is possible
+    my ($monitored_conn, $write_conn) = $self->open_connections()
 
     # TODO
     # do the concreate things
