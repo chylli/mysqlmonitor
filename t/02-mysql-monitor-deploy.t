@@ -40,4 +40,5 @@ is(do_query($write_dbh,'select max(n) from testmonitor.numbers'), 4095, "table n
 
 is(do_query($write_dbh,'select chart_height from testmonitor.charts_api'), 190, "table charts_api created and data inserted");
 
+is(do_query($write_dbh,'select count(*) from testmonitor.html_components'),1,"table html_components created and data inserted");
 
