@@ -234,8 +234,39 @@ sub parse_options {
 
         );
 
+    # TODO: parse configure file
 
     $self->{args} = \@ARGV;
+
+    $self->verbose("mysqlmonitor version $VERSION. Copyright (c) 2012-2013 by Chylli", $self->{options}{version});
+    die "No database specified. Specify with -d or --database\n" unless $options->{database};
+    die "purge-days must be at least 1\n" if $options->{purge_days} < 1;
+    $self->verbose("database is $options->{database}");
+
+    for my $arg (@{$self->{args}}) {
+        if ($arg eq 'deploy') {
+            $self->verbose("Deploy requested. Will deploy");
+            $self->{action}{should_deploy} = 1;
+        }
+        elsif ($arg eq 'email_brief_report') {
+            $self->{action}{should_email_brief_report} = 1;
+        }
+        elsif ($arg eq 'http') {
+            $self->{action}{should_serve_http} = 1;
+        }
+        else {
+            die "Unkown command: $arg\n";
+        }
+    }
+
+
+
+
+
+
+
+
+
 }
 
 
@@ -306,7 +337,10 @@ sub open_connections{
     my $dsn = "DBI:mysql:database=$options->{database};host=$options->{host};port=$options->{port};mysql_socket=$options->{socket}";
     my $write_connection = DBI->connect($dsn, $options->{user}, $password);
 
-    return ($write_connection, $write_connection) unless $options->{monitored_host};
+    if (not $options->{monitored_host}){
+        $self->{monitored_conn} = $self->{write_conn} = $write_connection;
+        return ($write_connection, $write_connection);
+    }
 
     $self->verbose("monitored host is: $options->{monitored_host}");
 
@@ -322,7 +356,131 @@ sub open_connections{
     # Need to open a read connection
     $dsn = "DBI:mysql:database=test;host=$options->{monitored_host};port=$options->{monitored_port};mysql_socket=$options->{monitored_socket}";
     my $monitored_connection = DBI->connect($dsn, $options->{monitored_user}, $options->{monitored_password});
-    return $monitored_connection, $write_connection;
+
+    $self->{monitored_conn} = $monitored_connection;
+    $self->{write_conn} = $write_connection;
+    return ($monitored_connection, $write_connection);
+
+}
+
+=head2 init_connections
+
+init connections
+
+=cut
+
+sub init_connections{
+    my $self = shift;
+    my $sql = 'SET @@group_concat_max_len = GREATEST(@@group_concat_max_len, @@max_allowed_packet)';
+    $self->act_query($sql, $self->{monitored_conn});
+    $self->act_query($sql, $self->{write_conn});
+
+}
+
+=head2 act_query
+
+do query.
+
+=cut
+
+sub act_query{
+    my $self = shift;
+    my ($query, $connection) = @_;
+
+    $connection = $self->{write_conn} if not $connection;
+    return $connection->do($query);
+}
+
+=head2 get_monitored_host_mysql_version
+
+=cut
+
+sub get_monitored_host_mysql_version{
+    my $self = shift;
+    my $version = $self->get_row("select version() as version")->{'version'};
+    return $version;
+}
+
+=head2 get_row
+
+=cut
+
+sub get_row{
+    my ($self, $query, $connection) = @_;
+    $connection ||= $self->{monitored_conn};
+    my $row = $connection->selectrow_hashref($query);
+    return $row;
+}
+
+=head2 create_metadata_table
+
+create metadata table
+
+=cut
+
+sub create_metadata_table{
+    my $self = shift;
+    my $database = $self->{options}{database};
+    my $query = "DROP TABLE IF EXISTS $database.metadata";
+    eval {
+        $self->act_query($query);
+        1;
+    } or die "Cannot execute query : $query\n";
+    
+    $query = <<EOF;
+        CREATE TABLE $database.metadata (
+            version decimal(5,2) UNSIGNED NOT NULL,
+            last_deploy TIMESTAMP NOT NULL,
+            last_deploy_successful TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            mysql_version VARCHAR(255) CHARSET ascii NOT NULL,
+            database_name VARCHAR(255) CHARSET utf8 NOT NULL,
+            custom_queries VARCHAR(4096) CHARSET ascii NOT NULL
+        )
+EOF
+
+    eval {
+        $self->act_query($query);
+        1;
+    } or die "Cannot create table $database.metadata\n";
+    $self->verbose("metadata table created");
+
+
+    my $mysql_version = $self->get_monitored_host_mysql_version();
+    $query = <<EOF;
+        REPLACE INTO $database.metadata
+            (version, last_deploy_successful, mysql_version, database_name, custom_queries)
+        VALUES
+            ('$VERSION', 0, '$mysql_version', '$database','')
+EOF
+    $self->act_query($query);
+
+}
+
+=head2 deploy_schema
+
+deploy the schema
+
+=cut
+
+sub deploy_schema{
+    my $self = shift;
+    $self->create_metadata_table();
+
+
+}
+
+
+=head2 is_same_deploy
+
+tell if the deployed schema is the same with the existed schema
+
+=cut
+
+sub is_same_deploy{
+    my $self = shift;
+    # TODO
+
+    return 0;
 
 }
 
@@ -336,38 +494,26 @@ sub run {
     my $self = shift;
     $self->parse_options(@_);
 
-    $self->verbose("mysqlmonitor version $VERSION. Copyright (c) 2012-2013 by Chylli", $self->{options}{version});
 
     my $options = $self->{options};
     my $database_name = $options->{database};
     my $table_name = "status_variables";
 
-    die "No database specified. Specify with -d or --database\n" unless $database_name;
-    die "purge-days must be at least 1\n" if $options->{purge_days} < 1;
-    $self->verbose("database is $database_name");
-
-    my $should_deploy;
-    my $should_email_brief_report;
-    my $should_serve_http;
-
-    for my $arg (@{$self->{args}}) {
-        if ($arg eq 'deploy') {
-            $self->verbose("Deploy requested. Will deploy");
-            $should_deploy = 1;
-        }
-        elsif ($arg eq 'email_brief_report') {
-            $should_email_brief_report = 1;
-        }
-        elsif ($arg eq 'http') {
-            $should_serve_http = 1;
-        }
-        else {
-            die "Unkown command: $arg\n";
-        }
-    }
 
     # Open connections. From this point and on, database access is possible
-    my ($monitored_conn, $write_conn) = $self->open_connections()
+    my ($monitored_conn, $write_conn) = $self->open_connections();
+    $self->init_connections();
+
+    my $should_deploy = $self->{action}{should_deploy};
+    if (not $should_deploy && not $self->is_same_deploy()){
+        $self->verbose("Non matching deployed revision. Will auto-deploy");
+        $should_deploy = 1;
+    }
+    if ($should_deploy){
+        $self->deploy_schema();
+        # TODO
+    }
+
 
     # TODO
     # do the concreate things
