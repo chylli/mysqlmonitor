@@ -499,6 +499,36 @@ EOF
 
 }
 
+
+=head2 create_charts_api_table
+
+=cut
+
+sub create_charts_api_table {
+    my $self = shift;
+
+    my $col_info = <<EOF;
+            chart_width SMALLINT UNSIGNED NOT NULL,
+            chart_height SMALLINT UNSIGNED NOT NULL,
+            simple_encoding CHAR(62) CHARSET ascii COLLATE ascii_bin,
+            service_url VARCHAR(128) CHARSET ascii COLLATE ascii_bin
+EOF
+
+    my $chart_height = $self->{options}{chart_height};
+    my $chart_width = $self->{options}{chart_width};
+    my $chart_service_url = $self->{options}{chart_service_url};
+
+    my $insert_sql = <<EOF;
+            (chart_width, chart_height, simple_encoding, service_url)
+        VALUES
+            ('$chart_width', '$chart_height', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', '$chart_service_url')
+EOF
+
+    $self->recreate_table("charts_api", $col_info, $insert_sql);
+
+
+}
+
 =head2 deploy_schema
 
 deploy the schema
@@ -509,7 +539,7 @@ sub deploy_schema{
     my $self = shift;
     $self->create_metadata_table();
     $self->create_numbers_table();
-    #$self->create_charts_api_table();
+    $self->create_charts_api_table();
 
 }
 
