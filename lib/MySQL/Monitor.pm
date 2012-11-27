@@ -412,47 +412,90 @@ sub get_row{
     return $row;
 }
 
+
+=head2 create_table
+
+=cut
+
+sub recreate_table {
+    my $self = shift;
+    my ($table, $col_info, $insert_sql) = @_;
+
+    my $database = $self->{options}{database};
+    my $query = "DROP TABLE IF EXISTS $database.$table";
+
+    eval {
+        $self->act_query($query);
+        1;
+    } or die "Cannot execute query: $query\n";
+
+    $query = "CREATE TABLE $database.$table ( $col_info )";
+
+    eval {
+        $self->act_query($query);
+        $self->verbose("$table table created");
+        1;
+    } or die "Cannot create table $database.$table\n";
+    
+    $query = "INSERT IGNORE INTO $database.$table $insert_sql";
+
+    if ($query){
+        $self->act_query($query);
+    }
+}
+
+=head2 create_numbers_table
+
+=cut
+
+sub create_numbers_table {
+    my $self = shift;
+
+
+
+    my $col_info = <<EOF;
+            n SMALLINT UNSIGNED NOT NULL,
+            PRIMARY KEY (n)
+EOF
+
+    my $numbers_values = join ",", map {"($_)"} (0..4095);
+    my $insert_sql = <<EOF;
+        VALUES $numbers_values
+EOF
+
+    $self->recreate_table("numbers", $col_info, $insert_sql);
+
+}
+
 =head2 create_metadata_table
 
 create metadata table
 
 =cut
 
+
 sub create_metadata_table{
     my $self = shift;
-    my $database = $self->{options}{database};
-    my $query = "DROP TABLE IF EXISTS $database.metadata";
-    eval {
-        $self->act_query($query);
-        1;
-    } or die "Cannot execute query : $query\n";
+
     
-    $query = <<EOF;
-        CREATE TABLE $database.metadata (
+    my $col_info = <<EOF;
             version decimal(5,2) UNSIGNED NOT NULL,
             last_deploy TIMESTAMP NOT NULL,
             last_deploy_successful TINYINT UNSIGNED NOT NULL DEFAULT 0,
             mysql_version VARCHAR(255) CHARSET ascii NOT NULL,
             database_name VARCHAR(255) CHARSET utf8 NOT NULL,
             custom_queries VARCHAR(4096) CHARSET ascii NOT NULL
-        )
 EOF
 
-    eval {
-        $self->act_query($query);
-        1;
-    } or die "Cannot create table $database.metadata\n";
-    $self->verbose("metadata table created");
-
-
     my $mysql_version = $self->get_monitored_host_mysql_version();
-    $query = <<EOF;
-        REPLACE INTO $database.metadata
+    my $database = $self->{options}{database};
+    my $insert_sql = <<EOF;
             (version, last_deploy_successful, mysql_version, database_name, custom_queries)
         VALUES
             ('$VERSION', 0, '$mysql_version', '$database','')
 EOF
-    $self->act_query($query);
+
+    $self->recreate_table("metadata", $col_info, $insert_sql);
 
 }
 
@@ -465,7 +508,8 @@ deploy the schema
 sub deploy_schema{
     my $self = shift;
     $self->create_metadata_table();
-
+    $self->create_numbers_table();
+    #$self->create_charts_api_table();
 
 }
 

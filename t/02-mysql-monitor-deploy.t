@@ -34,7 +34,10 @@ $monitor->init_connections();
 is(do_query($read_dbh,'select @@group_concat_max_len'), do_query($read_dbh, 'select GREATEST(@@group_concat_max_len, @@max_allowed_packet)'), "the variable group_concat_max_len should be changed");
 
 $monitor->create_metadata_table();
-is(do_query($write_dbh,'select version from testmonitor.metadata'), $MySQL::Monitor::VERSION, "table metadata created and data inserted")
+is(do_query($write_dbh,'select version from testmonitor.metadata'), $MySQL::Monitor::VERSION, "table metadata created and data inserted");
+
+$monitor->create_numbers_table();
+is(do_query($write_dbh,'select max(n) from testmonitor.numbers'), 4095, "table numbers created and data inserted");
 
 
 
