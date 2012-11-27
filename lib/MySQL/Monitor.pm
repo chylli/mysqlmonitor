@@ -28,6 +28,46 @@ Perhaps a little code snippet.
 
 =cut
 
+my %options = 
+  (
+   "user"=> "",
+   "host"=> "localhost",
+   "password"=> "",
+   "prompt_password"=> 0,
+   "port"=> 3306,
+   "socket"=> "/var/run/mysqld/mysql.sock",
+   "monitored_host"=> undef,
+   "monitored_port"=> 3306,
+   "monitored_socket"=> undef,
+   "monitored_user"=> undef,
+   "monitored_password"=> undef,
+   "defaults_file"=> "",
+   "database"=> "mycheckpoint",
+   "skip_aggregation"=> 0,
+   "rebuild_aggregation"=> 0,
+   "purge_days"=> 182,
+   "disable_bin_log"=> 0,
+   "skip_check_replication"=> 0,
+   "force_os_monitoring"=> 0,
+   "skip_alerts"=> 0,
+   "skip_emails"=> 0,
+   "force_emails"=> 0,
+   "skip_custom"=> 0,
+   "skip_defaults_file"=> 0,
+   "chart_width"=> 370,
+   "chart_height"=> 180,
+   "chart_service_url"=> "http=>//chart.apis.google.com/chart",
+   "smtp_host"=> undef,
+   "smtp_from"=> undef,
+   "smtp_to"=> undef,
+   "http_port"=> 12306,
+   "debug"=> 0,
+   "verbose"=> 0,
+   "version"=> 0,
+  );
+
+my ($args, %action, $monitored_conn, $write_conn);
+
 my $help_msg = <<HELP;
 Usage: mysqlmonitor [options] [command [, command ...]]
 
@@ -139,54 +179,6 @@ SCHART
 
 =head1 SUBROUTINES/METHODS
 
-=head2 new
-
-=cut
-
-sub new {
-    my $class = shift;
-
-    my %options = 
-      (
-       "user"=> "",
-       "host"=> "localhost",
-       "password"=> "",
-       "prompt_password"=> 0,
-       "port"=> 3306,
-       "socket"=> "/var/run/mysqld/mysql.sock",
-       "monitored_host"=> undef,
-       "monitored_port"=> 3306,
-       "monitored_socket"=> undef,
-       "monitored_user"=> undef,
-       "monitored_password"=> undef,
-       "defaults_file"=> "",
-       "database"=> "mycheckpoint",
-       "skip_aggregation"=> 0,
-       "rebuild_aggregation"=> 0,
-       "purge_days"=> 182,
-       "disable_bin_log"=> 0,
-       "skip_check_replication"=> 0,
-       "force_os_monitoring"=> 0,
-       "skip_alerts"=> 0,
-       "skip_emails"=> 0,
-       "force_emails"=> 0,
-       "skip_custom"=> 0,
-       "skip_defaults_file"=> 0,
-       "chart_width"=> 370,
-       "chart_height"=> 180,
-       "chart_service_url"=> "http=>//chart.apis.google.com/chart",
-       "smtp_host"=> undef,
-       "smtp_from"=> undef,
-       "smtp_to"=> undef,
-       "http_port"=> 12306,
-       "debug"=> 0,
-       "verbose"=> 0,
-       "version"=> 0,
-       );
-
-    return bless {options => \%options}, $class;
-}
-
 =head2 parse_options
 
 parse the options, if there is a 'help' or 'man', print help info and exit
@@ -194,88 +186,79 @@ parse the options, if there is a 'help' or 'man', print help info and exit
 =cut
 
 sub parse_options {
-    my $self = shift;
+    
 
     local @ARGV ;
     push @ARGV, @_;
 
-    my $options = $self->{options};
-
     Getopt::Long::Configure("bundling");
     Getopt::Long::GetOptions
         (
-         'h|help' => sub {$self->show_help},
-         'u|user=s' => \$options->{user},
-         'H|host=s' => \$options->{host},
-         'p|password=s' => \$options->{password},
-         'ask-pass' => \$options->{prompt_password},
-         'P|port=i' => \$options->{port},
-         'S|socket=s' => \$options->{socket},
-         'monitored-host=s' => \$options->{monitored_host},
-         'monitored-port=s' => \$options->{monitored_host},
-         'monitored-socket=s' => \$options->{monitored_socket},
-         'monitored-user=s' => \$options->{monitored_user},
-         'monitored-password=s' => \$options->{monitored_password},
-         'defaults-file=s' => \$options->{defaults_file},
-         'd|database=s' => \$options->{database},
-         'skip-aggregation' => \$options->{skip_aggregation},
-         'rebuild-aggregation' => \$options->{rebuild_aggregation},
-         'purge-days=i' => \$options->{purge_days},
-         'disable-bin-log' => \$options->{disable_bin_log},
-         'skip-disable-bin-log' => sub {$options->{disable_bin_log} = 0},
-         'skip-check-replication' => \$options->{skip_check_replication},
-         'o|force-os-monitoring' => \$options->{force_os_monitoring},
-         'skip-alerts' => \$options->{skip_alerts},
-         'skip-emails' => \$options->{skip_emails},
-         'force-emails' => \$options->{force_emails},
-         'skip-custom' => \$options->{skip_custom},
-         'skip-defaults-file' => \$options->{skip_defaults_file},
-         'chart-width=i' => sub {shift; my $w = shift; $options->{chart_width} = $w > 150 ? $w : 150},
-         'chart-height=i' => sub {shift; my $h = shift; $options->{chart_height} = $h > 100 ? $h : 100},
-         'chart-service-url=s' => \$options->{chart_service_url},
-         'smtp-host=s' => \$options->{smtp_host},
-         'smtp-from=s' => \$options->{smtp_from},
-         'smtp-to=s' => \$options->{smtp_to},
-         'http-port=i' => \$options->{http_port},
-         'debug' => \$options->{debug},
-         'v|verbose' => \$options->{verbose},
-         'version' => \$options->{version},
+         'h|help' => \&show_help,
+         'u|user=s' => \$options{user},
+         'H|host=s' => \$options{host},
+         'p|password=s' => \$options{password},
+         'ask-pass' => \$options{prompt_password},
+         'P|port=i' => \$options{port},
+         'S|socket=s' => \$options{socket},
+         'monitored-host=s' => \$options{monitored_host},
+         'monitored-port=s' => \$options{monitored_host},
+         'monitored-socket=s' => \$options{monitored_socket},
+         'monitored-user=s' => \$options{monitored_user},
+         'monitored-password=s' => \$options{monitored_password},
+         'defaults-file=s' => \$options{defaults_file},
+         'd|database=s' => \$options{database},
+         'skip-aggregation' => \$options{skip_aggregation},
+         'rebuild-aggregation' => \$options{rebuild_aggregation},
+         'purge-days=i' => \$options{purge_days},
+         'disable-bin-log' => \$options{disable_bin_log},
+         'skip-disable-bin-log' => sub {$options{disable_bin_log} = 0},
+         'skip-check-replication' => \$options{skip_check_replication},
+         'o|force-os-monitoring' => \$options{force_os_monitoring},
+         'skip-alerts' => \$options{skip_alerts},
+         'skip-emails' => \$options{skip_emails},
+         'force-emails' => \$options{force_emails},
+         'skip-custom' => \$options{skip_custom},
+         'skip-defaults-file' => \$options{skip_defaults_file},
+         'chart-width=i' => sub {shift; my $w = shift; $options{chart_width} = $w > 150 ? $w : 150},
+         'chart-height=i' => sub {shift; my $h = shift; $options{chart_height} = $h > 100 ? $h : 100},
+         'chart-service-url=s' => \$options{chart_service_url},
+         'smtp-host=s' => \$options{smtp_host},
+         'smtp-from=s' => \$options{smtp_from},
+         'smtp-to=s' => \$options{smtp_to},
+         'http-port=i' => \$options{http_port},
+         'debug' => \$options{debug},
+         'v|verbose' => \$options{verbose},
+         'version' => \$options{version},
 
         );
 
     # TODO: parse configure file
 
-    $self->{args} = \@ARGV;
+    $args = \@ARGV;
 
-    $self->verbose("mysqlmonitor version $VERSION. Copyright (c) 2012-2013 by Chylli", $self->{options}{version});
-    die "No database specified. Specify with -d or --database\n" unless $options->{database};
-    die "purge-days must be at least 1\n" if $options->{purge_days} < 1;
-    $self->verbose("database is $options->{database}");
+    verbose("mysqlmonitor version $VERSION. Copyright (c) 2012-2013 by Chylli", $options{version});
+    die "No database specified. Specify with -d or --database\n" unless $options{database};
+    die "purge-days must be at least 1\n" if $options{purge_days} < 1;
+    verbose("database is $options{database}");
 
-    for my $arg (@{$self->{args}}) {
+    for my $arg (@{$args}) {
         if ($arg eq 'deploy') {
-            $self->verbose("Deploy requested. Will deploy");
-            $self->{action}{should_deploy} = 1;
+            verbose("Deploy requested. Will deploy");
+            $action{should_deploy} = 1;
         }
         elsif ($arg eq 'email_brief_report') {
-            $self->{action}{should_email_brief_report} = 1;
+            $action{should_email_brief_report} = 1;
         }
         elsif ($arg eq 'http') {
-            $self->{action}{should_serve_http} = 1;
+            $action{should_serve_http} = 1;
         }
         else {
             die "Unkown command: $arg\n";
         }
     }
 
-
-
-
-
-
-
-
-
+    return %options
 }
 
 
@@ -286,13 +269,13 @@ print help information.
 =cut
 
 sub show_help {
-    my $self = shift;
+    
     print $help_msg, "\n";
     exit 0;
 }
 
 sub stub {
-    my $self = shift;
+    
     my $option = shift;
     print "option $option not implemented yet\n";
     exit 0;
@@ -305,9 +288,9 @@ print messages when program is in verbose mode.
 =cut
 
 sub verbose {
-    my $self = shift;
+    
     my ($message, $force_verbose) = @_;
-    print "-- $message\n" if $self->{options}{verbose} || $force_verbose;
+    print "-- $message\n" if $options{verbose} || $force_verbose;
 }
 
 =head2 print_error
@@ -315,7 +298,7 @@ sub verbose {
 =cut
 
 sub print_error {
-    my $self = shift;
+    
     my $message = shift;
     print STDERR "-- ERROR: $message\n";
 }
@@ -331,43 +314,42 @@ return dbh of monitored and wrote db.
 =cut
 
 sub open_connections{
-    my $self = shift;
-    my $options = $self->{options};
-    my $password = $options->{password};
-    if ($options->{prompt_password}) {
+    
+    my $password = $options{password};
+    if ($options{prompt_password}) {
         print "Password:";
         ReadMode 'noecho';
         $password = ReadLine 0;
         chomp $password;
         ReadMode 'restore';
-        $options->{password} = $password;
+        $options{password} = $password;
     }
 
-    my $dsn = "DBI:mysql:database=$options->{database};host=$options->{host};port=$options->{port};mysql_socket=$options->{socket}";
-    my $write_connection = DBI->connect($dsn, $options->{user}, $password);
+    my $dsn = "DBI:mysql:database=$options{database};host=$options{host};port=$options{port};mysql_socket=$options{socket}";
+    my $write_connection = DBI->connect($dsn, $options{user}, $password);
 
-    if (not $options->{monitored_host}){
-        $self->{monitored_conn} = $self->{write_conn} = $write_connection;
+    if (not $options{monitored_host}){
+        $monitored_conn = $write_conn = $write_connection;
         return ($write_connection, $write_connection);
     }
 
-    $self->verbose("monitored host is: $options->{monitored_host}");
+    verbose("monitored host is: $options{monitored_host}");
 
-    if (! $options->{monitored_user}) {
-        $options->{monitored_user} = $options->{user};
-        $options->{monitored_password} = $options->{password};
-        $self->verbose("monitored host credentials undefined; using write host credentials")
+    if (! $options{monitored_user}) {
+        $options{monitored_user} = $options{user};
+        $options{monitored_password} = $options{password};
+        verbose("monitored host credentials undefined; using write host credentials")
     }
-    if (not $options->{monitored_socket}){
-        $options->{monitored_socket} = $options->{socket}
+    if (not $options{monitored_socket}){
+        $options{monitored_socket} = $options{socket}
     }
     
     # Need to open a read connection
-    $dsn = "DBI:mysql:database=test;host=$options->{monitored_host};port=$options->{monitored_port};mysql_socket=$options->{monitored_socket}";
-    my $monitored_connection = DBI->connect($dsn, $options->{monitored_user}, $options->{monitored_password});
+    $dsn = "DBI:mysql:database=test;host=$options{monitored_host};port=$options{monitored_port};mysql_socket=$options{monitored_socket}";
+    my $monitored_connection = DBI->connect($dsn, $options{monitored_user}, $options{monitored_password});
 
-    $self->{monitored_conn} = $monitored_connection;
-    $self->{write_conn} = $write_connection;
+    $monitored_conn = $monitored_connection;
+    $write_conn = $write_connection;
     return ($monitored_connection, $write_connection);
 
 }
@@ -379,10 +361,10 @@ init connections
 =cut
 
 sub init_connections{
-    my $self = shift;
+    
     my $sql = 'SET @@group_concat_max_len = GREATEST(@@group_concat_max_len, @@max_allowed_packet)';
-    $self->act_query($sql, $self->{monitored_conn});
-    $self->act_query($sql, $self->{write_conn});
+    act_query($sql, $monitored_conn);
+    act_query($sql, $write_conn);
 
 }
 
@@ -393,10 +375,10 @@ do query.
 =cut
 
 sub act_query{
-    my $self = shift;
+    
     my ($query, $connection) = @_;
 
-    $connection = $self->{write_conn} if not $connection;
+    $connection = $write_conn if not $connection;
     return $connection->do($query);
 }
 
@@ -405,8 +387,8 @@ sub act_query{
 =cut
 
 sub get_monitored_host_mysql_version{
-    my $self = shift;
-    my $version = $self->get_row("select version() as version")->{'version'};
+    
+    my $version = get_row("select version() as version")->{'version'};
     return $version;
 }
 
@@ -415,8 +397,8 @@ sub get_monitored_host_mysql_version{
 =cut
 
 sub get_row{
-    my ($self, $query, $connection) = @_;
-    $connection ||= $self->{monitored_conn};
+    my ($query, $connection) = @_;
+    $connection ||= $monitored_conn;
     my $row = $connection->selectrow_hashref($query);
     return $row;
 }
@@ -427,29 +409,29 @@ sub get_row{
 =cut
 
 sub recreate_table {
-    my $self = shift;
+    
     my ($table, $col_info, $insert_sql) = @_;
 
-    my $database = $self->{options}{database};
+    my $database = $options{database};
     my $query = "DROP TABLE IF EXISTS $database.$table";
 
     eval {
-        $self->act_query($query);
+        act_query($query);
         1;
     } or die "Cannot execute query: $query\n";
 
     $query = "CREATE TABLE $database.$table ( $col_info )";
 
     eval {
-        $self->act_query($query);
-        $self->verbose("$table table created");
+        act_query($query);
+        verbose("$table table created");
         1;
     } or die "Cannot create table $database.$table\n";
     
     $query = "INSERT IGNORE INTO $database.$table $insert_sql";
 
     if ($query){
-        $self->act_query($query);
+        act_query($query);
     }
 }
 
@@ -458,7 +440,7 @@ sub recreate_table {
 =cut
 
 sub create_numbers_table {
-    my $self = shift;
+    
 
 
 
@@ -472,7 +454,7 @@ EOF
         VALUES $numbers_values
 EOF
 
-    $self->recreate_table("numbers", $col_info, $insert_sql);
+    recreate_table("numbers", $col_info, $insert_sql);
 
 }
 
@@ -484,7 +466,7 @@ create metadata table
 
 
 sub create_metadata_table{
-    my $self = shift;
+    
 
     
     my $col_info = <<EOF;
@@ -496,15 +478,15 @@ sub create_metadata_table{
             custom_queries VARCHAR(4096) CHARSET ascii NOT NULL
 EOF
 
-    my $mysql_version = $self->get_monitored_host_mysql_version();
-    my $database = $self->{options}{database};
+    my $mysql_version = get_monitored_host_mysql_version();
+    my $database = $options{database};
     my $insert_sql = <<EOF;
             (version, last_deploy_successful, mysql_version, database_name, custom_queries)
         VALUES
             ('$VERSION', 0, '$mysql_version', '$database','')
 EOF
 
-    $self->recreate_table("metadata", $col_info, $insert_sql);
+    recreate_table("metadata", $col_info, $insert_sql);
 
 }
 
@@ -514,7 +496,7 @@ EOF
 =cut
 
 sub create_charts_api_table {
-    my $self = shift;
+    
 
     my $col_info = <<EOF;
             chart_width SMALLINT UNSIGNED NOT NULL,
@@ -523,9 +505,9 @@ sub create_charts_api_table {
             service_url VARCHAR(128) CHARSET ascii COLLATE ascii_bin
 EOF
 
-    my $chart_height = $self->{options}{chart_height};
-    my $chart_width = $self->{options}{chart_width};
-    my $chart_service_url = $self->{options}{chart_service_url};
+    my $chart_height = $options{chart_height};
+    my $chart_width = $options{chart_width};
+    my $chart_service_url = $options{chart_service_url};
 
     my $insert_sql = <<EOF;
             (chart_width, chart_height, simple_encoding, service_url)
@@ -533,7 +515,7 @@ EOF
             ('$chart_width', '$chart_height', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', '$chart_service_url')
 EOF
 
-    $self->recreate_table("charts_api", $col_info, $insert_sql);
+    recreate_table("charts_api", $col_info, $insert_sql);
 
 
 }
@@ -544,7 +526,7 @@ EOF
 =cut
 
 sub create_html_components_table {
-    my $self = shift;
+    
 
     my $col_info = <<EOF;
             openark_lchart TEXT CHARSET ascii COLLATE ascii_bin,
@@ -630,7 +612,7 @@ EOF
         VALUES
             ('$openark_lchart', '$openark_schart', '$common_css')
 EOF
-        $self->recreate_table("html_components", $col_info, $insert_sql);
+        recreate_table("html_components", $col_info, $insert_sql);
 
 
 }
@@ -642,11 +624,11 @@ deploy the schema
 =cut
 
 sub deploy_schema{
-    my $self = shift;
-    $self->create_metadata_table();
-    $self->create_numbers_table();
-    $self->create_charts_api_table();
-    $self->create_html_components_table();
+    
+    create_metadata_table();
+    create_numbers_table();
+    create_charts_api_table();
+    create_html_components_table();
 
 }
 
@@ -658,7 +640,7 @@ tell if the deployed schema is the same with the existed schema
 =cut
 
 sub is_same_deploy{
-    my $self = shift;
+    
     # TODO
 
     return 0;
@@ -672,26 +654,26 @@ The program entrance.
 =cut
 
 sub run {
-    my $self = shift;
-    $self->parse_options(@_);
+    
+    parse_options(@_);
 
 
-    my $options = $self->{options};
-    my $database_name = $options->{database};
+
+    my $database_name = $options{database};
     my $table_name = "status_variables";
 
 
     # Open connections. From this point and on, database access is possible
-    my ($monitored_conn, $write_conn) = $self->open_connections();
-    $self->init_connections();
+    my ($monitored_conn, $write_conn) = open_connections();
+    init_connections();
 
-    my $should_deploy = $self->{action}{should_deploy};
-    if (not $should_deploy && not $self->is_same_deploy()){
-        $self->verbose("Non matching deployed revision. Will auto-deploy");
+    my $should_deploy = $action{should_deploy};
+    if (not $should_deploy && not is_same_deploy()){
+        verbose("Non matching deployed revision. Will auto-deploy");
         $should_deploy = 1;
     }
     if ($should_deploy){
-        $self->deploy_schema();
+        deploy_schema();
         # TODO
     }
 

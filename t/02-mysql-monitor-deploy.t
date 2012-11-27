@@ -23,17 +23,16 @@ sub setup{
 
 setup();
 
-my $monitor = MySQL::Monitor->new;
-$monitor->parse_options(qw{-S /var/run/mysqld/mysqld.sock -u testmonitor -p 123456 -d testmonitor --chart-width=100 --chart-height=190 -S /var/run/mysqld/mysqld.sock deploy});
+my %options = MySQL::Monitor::parse_options(qw{-S /var/run/mysqld/mysqld.sock -u testmonitor -p 123456 -d testmonitor --chart-width=100 --chart-height=190 -S /var/run/mysqld/mysqld.sock deploy});
 
-my ($read_dbh, $write_dbh) = $monitor->open_connections();
+my ($read_dbh, $write_dbh) = MySQL::Monitor::open_connections();
 isa_ok($write_dbh, "DBI::db", "open_connection return a dbh");
 is($read_dbh, $write_dbh,"read_dbh and write_dba are a same dbh when there is no monitored db in args");
 
-$monitor->init_connections();
+MySQL::Monitor::init_connections();
 is(do_query($read_dbh,'select @@group_concat_max_len'), do_query($read_dbh, 'select GREATEST(@@group_concat_max_len, @@max_allowed_packet)'), "the variable group_concat_max_len should be changed");
 
-$monitor->deploy_schema();
+MySQL::Monitor::deploy_schema();
 is(do_query($write_dbh,'select version from testmonitor.metadata'), $MySQL::Monitor::VERSION, "table metadata created and data inserted");
 
 is(do_query($write_dbh,'select max(n) from testmonitor.numbers'), 4095, "table numbers created and data inserted");
