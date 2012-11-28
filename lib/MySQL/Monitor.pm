@@ -660,6 +660,46 @@ EOF
 
 }
 
+=head2 create_custom_query_view
+
+=cut
+
+sub create_custom_query_view{
+    my $query = <<EOF;
+        CREATE
+        OR REPLACE
+        ALGORITHM = TEMPTABLE
+        DEFINER = CURRENT_USER
+        SQL SECURITY INVOKER
+        VIEW $options{database}.custom_query_view AS
+          SELECT
+            custom_query_id,
+            enabled,
+            query_eval,
+            description,
+            chart_type,
+            chart_order,
+            CASE chart_type
+                WHEN 'value' THEN CONCAT('custom_', custom_query_id)
+                WHEN 'value_psec' THEN CONCAT('custom_', custom_query_id, '_psec')
+                WHEN 'time' THEN CONCAT('custom_', custom_query_id, '_time')
+                WHEN 'none' THEN NULL
+            END AS chart_name,
+            CASE chart_type
+                WHEN 'none' THEN 0
+                ELSE 1
+            END AS chart_enabled
+          FROM
+            $options{database}.custom_query
+          ORDER BY 
+            custom_query.chart_order, custom_query.custom_query_id
+EOF
+
+    act_query($query);
+    verbose("custom_query_view created");
+
+}
+
 =head2 deploy_schema
 
 deploy the schema
@@ -673,6 +713,8 @@ sub deploy_schema{
     create_charts_api_table();
     create_html_components_table();
     create_custom_query_table();
+    create_custom_query_view();
+
 }
 
 
