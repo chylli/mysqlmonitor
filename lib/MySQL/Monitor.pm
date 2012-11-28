@@ -617,6 +617,49 @@ EOF
 
 }
 
+=head2 create_custom_query_table
+
+=cut
+
+sub create_custom_query_table{
+    my $query = <<EOF;
+      CREATE TABLE IF NOT EXISTS $options{database}.custom_query (
+          custom_query_id INT UNSIGNED,
+          enabled BOOL NOT NULL DEFAULT 1,
+          query_eval VARCHAR(4095) CHARSET utf8 COLLATE utf8_bin NOT NULL,
+          description VARCHAR(255) CHARSET utf8 COLLATE utf8_bin DEFAULT NULL,
+          chart_type ENUM('value', 'value_psec', 'time', 'none') NOT NULL DEFAULT 'value',
+          chart_order TINYINT(4) NOT NULL DEFAULT '0',
+          PRIMARY KEY (custom_query_id)
+        )
+EOF
+
+    eval {
+        act_query($query);
+        verbose("custom_query table created");
+        1;
+    } or die "Cannot create table $options{database}.custom_query\n";
+
+    $query = <<EOF;
+        UPDATE $options{database}.metadata 
+        SET custom_queries = 
+            (SELECT 
+                IFNULL(
+                  GROUP_CONCAT(
+                    CONCAT(custom_query_id, ':', chart_type) 
+                    ORDER BY chart_order, custom_query_id SEPARATOR ','
+                  )
+                  , '') 
+            FROM $options{database}.custom_query
+            ) 
+
+EOF
+
+    act_query($query);
+
+
+}
+
 =head2 deploy_schema
 
 deploy the schema
@@ -629,7 +672,7 @@ sub deploy_schema{
     create_numbers_table();
     create_charts_api_table();
     create_html_components_table();
-
+    create_custom_query_table();
 }
 
 

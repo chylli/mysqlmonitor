@@ -41,3 +41,4 @@ is(do_query($write_dbh,'select chart_height from testmonitor.charts_api'), 190, 
 
 is(do_query($write_dbh,'select count(*) from testmonitor.html_components'),1,"table html_components created and data inserted");
 
+is(do_query($write_dbh,'select count(*) from testmonitor.custom_query'),0,"table custom_query created");
