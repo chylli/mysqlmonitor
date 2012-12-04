@@ -7,6 +7,12 @@ use Getopt::Long;
 use DBI;
 use Term::ReadKey;
 use Smart::Comments;
+use List::MoreUtils qw(any);
+use Net::Domain qw(hostname hostfqdn);
+use Cwd qw(abs_path);
+use File::Mountpoint qw(is_mountpoint);
+use File::Basename qw(dirname);
+use Filesys::DfPortable;
 
 =head1 NAME
 
@@ -28,6 +34,7 @@ Perhaps a little code snippet.
 
 =cut
 
+# global variables
 my %options = 
   (
    "user"=> "",
@@ -66,7 +73,10 @@ my %options =
    "version"=> 0,
   );
 
-my ($args, %action, $monitored_conn, $write_conn);
+my $database_name;
+my $table_name = "status_variables";
+
+my ($args, %action, $monitored_conn, $write_conn, %status_dict, %extra_dict, @custom_query_ids);
 
 my $help_msg = <<HELP;
 Usage: mysqlmonitor [options] [command [, command ...]]
@@ -258,6 +268,7 @@ sub parse_options {
         }
     }
 
+    $database_name = $options{database};
     return %options
 }
 
@@ -326,7 +337,8 @@ sub open_connections{
     }
 
     my $dsn = "DBI:mysql:database=$options{database};host=$options{host};port=$options{port};mysql_socket=$options{socket}";
-    my $write_connection = DBI->connect($dsn, $options{user}, $password);
+    # raise error, to catch exception
+    my $write_connection = DBI->connect($dsn, $options{user}, $password,{RaiseError => 1, PrintError => 0 });
 
     if (not $options{monitored_host}){
         $monitored_conn = $write_conn = $write_connection;
@@ -346,7 +358,7 @@ sub open_connections{
     
     # Need to open a read connection
     $dsn = "DBI:mysql:database=test;host=$options{monitored_host};port=$options{monitored_port};mysql_socket=$options{monitored_socket}";
-    my $monitored_connection = DBI->connect($dsn, $options{monitored_user}, $options{monitored_password});
+    my $monitored_connection = DBI->connect($dsn, $options{monitored_user}, $options{monitored_password},{RaiseError => 1, PrintError => 0});
 
     $monitored_conn = $monitored_connection;
     $write_conn = $write_connection;
@@ -401,6 +413,19 @@ sub get_row{
     $connection ||= $monitored_conn;
     my $row = $connection->selectrow_hashref($query);
     return $row;
+}
+
+=head2 get_rows
+
+=cut
+
+
+sub get_rows{
+    my ($query, $connection) = @_;
+    $connection ||= $monitored_conn;
+    my $raise_error = $connection->{RaiseError};
+    my @rows = @{ $connection->selectall_arrayref($query, { Slice => {} }) };
+    return @rows;
 }
 
 
@@ -700,6 +725,670 @@ EOF
 
 }
 
+=head2 is_signed_column
+
+=cut
+
+sub is_signed_column{
+    my $column_name = shift;
+    my @known_signed_diff_status_variables = (
+        "threads_cached",
+        "threads_connected",
+        "threads_running",
+        "open_table_definitions",
+        "open_tables",
+        "slave_open_temp_tables",
+        "qcache_free_blocks",
+        "qcache_free_memory",
+        "qcache_queries_in_cache",
+        "qcache_total_blocks",
+        "innodb_page_size",
+        "innodb_buffer_pool_pages_total",
+        "innodb_buffer_pool_pages_free",
+        "innodb_buffer_pool_pages_data",
+        "innodb_buffer_pool_pages_dirty",
+        "innodb_buffer_pool_pages_misc",
+        "key_blocks_unused",
+        "key_cache_block_size",
+        "master_status_position",
+        "read_master_log_pos",
+        "relay_log_pos",
+        "exec_master_log_pos",
+        "relay_log_space",
+        "seconds_behind_master",
+                                             );
+    return any {$_ eq $column_name} @known_signed_diff_status_variables;
+}
+
+=head2 get_column_sign_indicator(column_name)
+
+=cut
+
+sub get_column_sign_indicator{
+    my $column_name = shift;
+    if (is_signed_column($column_name)){
+        return "SIGNED";
+    } else {
+        return "UNSIGNED";
+    }
+}
+
+
+
+=head2 get_custom_status_variables
+
+=cut
+
+sub get_custom_status_variables{
+    my @custom_status_variables = map("custom_$_" , get_custom_query_ids());
+    return @custom_status_variables;
+}
+
+=head2 get_custom_time_status_variables
+
+=cut
+
+sub get_custom_time_status_variables{
+    my @custom_time_status_variables = map("custom_${_}_time", get_custom_query_ids());
+    return @custom_time_status_variables;
+}
+
+=head2 get_custom_query_ids
+
+    Returns ids of custom queries
+
+=cut
+
+sub get_custom_query_ids{
+    if(not @custom_query_ids){
+        my $query = "SELECT custom_query_id, chart_name FROM $database_name.custom_query_view";
+        my @rows = get_rows($query, $write_conn);
+        @custom_query_ids = map {$_->{custom_query_id}} @rows;
+    }
+
+    return @custom_query_ids;
+}
+
+=head2 get_additional_status_variables
+
+=cut
+
+sub get_additional_status_variables {
+    my @additional_status_variables = 
+      (
+        "queries",
+        "open_table_definitions",
+        "opened_table_definitions",
+        "innodb_buffer_pool_pages_free", 
+        "innodb_buffer_pool_pages_total", 
+        "innodb_buffer_pool_reads", 
+        "innodb_buffer_pool_read_requests", 
+        "innodb_buffer_pool_reads", 
+        "innodb_buffer_pool_pages_flushed", 
+        "innodb_buffer_pool_read_ahead",
+        "innodb_buffer_pool_read_ahead_evicted",
+        "innodb_os_log_written", 
+        "innodb_row_lock_waits", 
+        "innodb_row_lock_current_waits", 
+        "innodb_row_lock_time", 
+        "innodb_rows_read", 
+        "innodb_rows_inserted", 
+        "innodb_rows_updated", 
+        "innodb_rows_deleted",
+      );
+
+    my @custom_status_variables = get_custom_status_variables();
+    my @custom_time_status_variables = get_custom_time_status_variables();
+
+    return (@additional_status_variables, @custom_status_variables, @custom_time_status_variables);
+
+}
+
+=head2 is_neglectable_variable
+
+=cut
+
+sub is_neglectable_variable{
+    my $variable_name = shift;
+    return 1 if ($variable_name =~ /^(ssl_|ndb_)/);
+    return 1 if $variable_name eq 'last_query_cost';
+    return 1 if $variable_name eq 'rpl_status';
+    return 0;
+}
+
+=head2 normalize_variable_value(variable_name, variable_value)
+
+=cut
+
+sub normalize_variable_value{
+    my ($variable_name, $variable_value) = @_;
+    my $nvalue = $variable_value;
+    my %mvalues;
+    # First, handle special cases.
+    # I'm fearful about name colisions, where values do not agree.
+    if ($variable_name eq "concurrent_insert") {
+        %mvalues = (
+                      never => 0,
+                      auto => 1,
+                      always => 2,
+                     );
+       $nvalue =  $mvalues{$variable_value};
+    }
+
+    %mvalues = (
+                  off => 0,
+                  on => 1,
+                  demand => 2,
+                  no => 0,
+                  yes => 1,
+                 );
+    if(exists($mvalues{$variable_value})){
+        $nvalue = $mvalues{$variable_value};
+    }
+    if($variable_name eq 'delay_key_write' and $variable_value eq 'all'){
+        $nvalue = 2;
+    }
+    return $nvalue ;
+
+}
+
+=head2 get_global_variables()
+
+=cut
+
+sub get_global_variables{
+    my @global_variables = (
+        "auto_increment_increment",
+        "binlog_cache_size",
+        "bulk_insert_buffer_size",
+        "concurrent_insert",
+        "connect_timeout",
+        "delay_key_write",
+        "delayed_insert_limit",
+        "delayed_insert_timeout",
+        "delayed_queue_size",
+        "expire_logs_days",
+        "foreign_key_checks",
+        "group_concat_max_len",
+        "innodb_additional_mem_pool_size",
+        "innodb_autoextend_increment",
+        "innodb_autoinc_lock_mode",
+        "innodb_buffer_pool_size",
+        "innodb_checksums",
+        "innodb_commit_concurrency",
+        "innodb_concurrency_tickets",
+        "innodb_fast_shutdown",
+        "innodb_file_io_threads",
+        "innodb_file_per_table",
+        "innodb_flush_log_at_trx_commit",
+        "innodb_force_recovery",
+        "innodb_lock_wait_timeout",
+        "innodb_log_buffer_size",
+        "innodb_log_file_size",
+        "innodb_log_files_in_group",
+        "innodb_max_dirty_pages_pct",
+        "innodb_max_purge_lag",
+        "innodb_mirrored_log_groups",
+        "innodb_open_files",
+        "innodb_rollback_on_timeout",
+        "innodb_stats_on_metadata",
+        "innodb_support_xa",
+        "innodb_sync_spin_loops",
+        "innodb_table_locks",
+        "innodb_thread_concurrency",
+        "innodb_thread_sleep_delay",
+        "join_buffer_size",
+        "key_buffer_size",
+        "key_cache_age_threshold",
+        "key_cache_block_size",
+        "key_cache_division_limit",
+        "large_files_support",
+        "large_page_size",
+        "large_pages",
+        "locked_in_memory",
+        "log_queries_not_using_indexes",
+        "log_slow_queries",
+        "long_query_time",
+        "low_priority_updates",
+        "max_allowed_packet",
+        "max_binlog_cache_size",
+        "max_binlog_size",
+        "max_connect_errors",
+        "max_connections",
+        "max_delayed_threads",
+        "max_error_count",
+        "max_heap_table_size",
+        "max_insert_delayed_threads",
+        "max_join_size",
+        "max_length_for_sort_data",
+        "max_prepared_stmt_count",
+        "max_relay_log_size",
+        "max_seeks_for_key",
+        "max_sort_length",
+        "max_sp_recursion_depth",
+        "max_tmp_tables",
+        "max_user_connections",
+        "max_write_lock_count",
+        "min_examined_row_limit",
+        "multi_range_count",
+        "myisam_data_pointer_size",
+        "myisam_max_sort_file_size",
+        "myisam_repair_threads",
+        "myisam_sort_buffer_size",
+        "myisam_use_mmap",
+        "net_buffer_length",
+        "net_read_timeout",
+        "net_retry_count",
+        "net_write_timeout",
+        "old_passwords",
+        "open_files_limit",
+        "optimizer_prune_level",
+        "optimizer_search_depth",
+        "port",
+        "preload_buffer_size",
+        "profiling",
+        "profiling_history_size",
+        "protocol_version",
+        "pseudo_thread_id",
+        "query_alloc_block_size",
+        "query_cache_limit",
+        "query_cache_min_res_unit",
+        "query_cache_size",
+        "query_cache_type",
+        "query_cache_wlock_invalidate",
+        "query_prealloc_size",
+        "range_alloc_block_size",
+        "read_buffer_size",
+        "read_only",
+        "read_rnd_buffer_size",
+        "relay_log_space_limit",
+        "rpl_recovery_rank",
+        "server_id",
+        "skip_external_locking",
+        "skip_networking",
+        "skip_show_database",
+        "slave_compressed_protocol",
+        "slave_net_timeout",
+        "slave_transaction_retries",
+        "slow_launch_time",
+        "slow_query_log",
+        "sort_buffer_size",
+        "sql_auto_is_null",
+        "sql_big_selects",
+        "sql_big_tables",
+        "sql_buffer_result",
+        "sql_log_bin",
+        "sql_log_off",
+        "sql_log_update",
+        "sql_low_priority_updates",
+        "sql_max_join_size",
+        "sql_notes",
+        "sql_quote_show_create",
+        "sql_safe_updates",
+        "sql_select_limit",
+        "sql_warnings",
+        "sync_binlog",
+        "sync_frm",
+        "table_cache",
+        "table_definition_cache",
+        "table_lock_wait_timeout",
+        "table_open_cache",
+        "thread_cache_size",
+        "thread_stack",
+        "timed_mutexes",
+        "timestamp",
+        "tmp_table_size",
+        "transaction_alloc_block_size",
+        "transaction_prealloc_size",
+        "unique_checks",
+        "updatable_views_with_limit",
+        "wait_timeout",
+        "warning_count",
+        );
+    return @global_variables;
+}
+
+=head2 get_extra_variables
+
+=cut
+
+sub get_extra_variables{
+    my @extra_variables = (
+        "hostname",
+        "datadir",
+        "tmpdir",
+        "version",
+        "sql_mode",
+        );
+    return @extra_variables
+}
+
+=head2 get_monitored_host
+
+=cut
+
+sub get_monitored_host{
+    my $monitored_host = $options{monitored_host};
+    $monitored_host ||= $options{host};
+    return $monitored_host
+}
+
+=head2 is_local_monitoring
+
+=cut
+
+sub is_local_monitoring{
+    my $monitored_host = get_monitored_host();
+    my @localhost = ('localhost', '127.0.0.1',hostname(),hostfqdn());
+    return 1 if (any {$monitored_host eq $_} @localhost);
+    return 0;
+
+}
+
+=head2 should_monitor_os
+
+=cut
+
+sub should_monitor_os{
+    return 1 if ($options{force_os_monitoring} || is_local_monitoring());
+    return 0;
+}
+
+=head2 get_page_io_activity
+
+    From /proc/vmstat, read pages in/out, swap in/out (since kast reboot)
+
+=cut
+
+sub get_page_io_activity{
+
+    #TODO
+
+}
+
+=head2 get_mountpoint_usage_percent(path):
+
+    Find the mountpoint for the given path; return the integer number of disk used percent.
+
+=cut
+
+sub get_mountpoint_usage_percent{
+    my $path = shift;
+    my $mountpoint = abs_path($path);
+    while(not is_mountpoint($mountpoint)){
+        $mountpoint = dirname($mountpoint);
+    }
+
+
+    # The following calculation follows df.c (part of coreutils)
+    # statvfs.f_blocks is total blocks
+    # statvfs.f_bavail is available blocks
+    # statvfs.f_bfree is blocks available to root
+    my $ref = dfportable($mountpoint);
+
+    my $used_blocks = $ref->{blocks} - $ref->{bfree};
+    my $nonroot_total_blocks = $used_blocks + $ref->{bavail};
+
+    use Data::Dumper;
+    print Dumper($ref);
+
+    print "used_blocks: $used_blocks, nonroot total_blocks: $nonroot_total_blocks\n";
+    my $used_percent = int(100 * $used_blocks / $nonroot_total_blocks);
+    if(100*$used_blocks % $nonroot_total_blocks != 0){
+        $used_percent += 1;
+    }
+
+    return $used_percent;
+
+}
+
+=head2 fetch_status_variables
+
+    Fill in the status_dict. We make point of filling in all variables, even those not existing,
+    for having the dictionary hold the keys. Based on these keys, tables and views are created.
+    So it is important that we have the dictionary include all possible keys.
+
+=cut
+
+sub fetch_status_variables{
+    return %status_dict if %status_dict;
+
+    # Make sure some status variables exist: these are required due to 5.0 - 5.1
+    # or minor versions incompatibilities.
+    for my $additional_status_variable (get_additional_status_variables()){
+        $status_dict{$additional_status_variable} = undef;
+    }
+
+    my $query = 'show global status';
+    my @rows = get_rows($query);
+    for my $row (@rows) {
+        my $variable_name = lc $row->{Variable_name};
+        $variable_name =~ s/(^\s+)|(\s+$)//g;
+        my $variable_value = lc $row->{Value};
+        if (not is_neglectable_variable($variable_name)){
+            $status_dict{$variable_name} = normalize_variable_value($variable_name,$variable_value);
+        }
+    }
+
+    # Listing of interesting global variables:
+    my @global_variables = get_global_variables();
+    my @extra_variables = get_extra_variables();
+    map {$status_dict{$_} = undef} @global_variables;
+    $query = "SHOW GLOBAL VARIABLES";
+    @rows = get_rows($query);
+    for my $row (@rows) {
+        my $variable_name = lc $row->{Variable_name};
+        $variable_name =~ s/(^\s+)|(\s+$)//g;
+        my $variable_value = lc $row->{Value};
+        if (any {$_ eq $variable_name} @global_variables){
+            $status_dict{$variable_name} = normalize_variable_value($variable_name,$variable_value);
+        }
+        elsif(any {$_ eq $variable_name} @extra_variables){
+            $extra_dict{$variable_name} = $variable_value;
+        }
+    }
+    
+    $status_dict{metadata_version} = $VERSION;
+
+    verbose("Global status & variables recorded");
+
+    # Master & slave status
+    $status_dict{"master_status_position"} = undef;
+    $status_dict{"master_status_file_number"} = undef;
+    my @slave_status_variables = (
+        "Read_Master_Log_Pos",
+        "Relay_Log_Pos",
+        "Exec_Master_Log_Pos",
+        "Relay_Log_Space",
+        "Seconds_Behind_Master",
+                                 );
+    map {$status_dict{$_} = undef} @slave_status_variables;
+    if(not $options{skip_check_replication}){
+        eval {
+            #local $SIG{__WARN__} = sub {};
+            $query = "SHOW MASTER STATUS";
+            my $master_status = get_row($query);
+            if($master_status){
+                $status_dict{"master_status_position"} = $master_status->{"Position"};
+                my $log_file_name = $master_status->{"File"};
+                my @splited_file_name = split /./, $log_file_name;
+                my $log_file_number = $splited_file_name[-1];
+                $status_dict{"master_status_file_number"} = $log_file_number;
+            }
+            $query = "SHOW SLAVE STATUS";
+            my $slave_status = get_row($query);
+            if ($slave_status){
+                for my $variable_name  (@slave_status_variables){
+                    $status_dict{lc $variable_name} = $slave_status->{$variable_name};
+                }
+            }
+            verbose("Master and slave status recorded");
+            1;
+        } or   # An exception can be thrown if the user does not have enough privileges:
+          print_error("Cannot show master & slave status. Skipping");
+
+    }
+
+    # OS (linux) load average
+    $status_dict{"os_loadavg_millis"} = undef;
+    # OS (linux) CPU
+    $status_dict{"os_cpu_user"} = undef;
+    $status_dict{"os_cpu_nice"} = undef;
+    $status_dict{"os_cpu_system"} = undef;
+    $status_dict{"os_cpu_idle"} = undef;
+    $status_dict{"os_total_cpu_cores"} = undef;
+    # OS Mem
+    $status_dict{"os_mem_total_kb"} = undef;
+    $status_dict{"os_mem_free_kb"} = undef;
+    $status_dict{"os_mem_active_kb"} = undef;
+    $status_dict{"os_swap_total_kb"} = undef;
+    $status_dict{"os_swap_free_kb"} = undef;
+
+    $status_dict{"os_root_mountpoint_usage_percent"} = undef;
+    $status_dict{"os_datadir_mountpoint_usage_percent"} = undef;
+    $status_dict{"os_tmpdir_mountpoint_usage_percent"} = undef;
+
+    $status_dict{"os_page_ins"} = undef;
+    $status_dict{"os_page_outs"} = undef;
+    $status_dict{"os_swap_ins"} = undef;
+    $status_dict{"os_swap_outs"} = undef;
+
+    if(should_monitor_os()){
+        eval {
+            open(my $f, '/proc/stat');
+            my @proc_stat_lines = <$f>;
+            close ($f);
+            my $first_line = $proc_stat_lines[0];
+            my @tokens = split ' ', $first_line;
+            @status_dict{qw(os_cpu_user os_cpu_nice os_cpu_system os_cpu_idle)} = @tokens[1..5];
+
+            my @cpu_lines = grep (/^cpu\d/, @proc_stat_lines);
+            $status_dict{os_total_cpu_cores} = scalar @cpu_lines;
+            verbose('OS CPU info recorded');
+        } or verbose("Cannot read /proc/stat. Skipping");
+
+
+        eval {
+            open(my $f,'/proc/loadavg');
+            my $first_line = <$f>;
+            close($f);
+            my @tokens = split ' ', $first_line;
+            my $loadavg_1_min = $tokens[0];
+            $status_dict{os_loadavg_millis} = $loadavg_1_min * 1000;
+            verbose("OS load average info recorded");
+            } or verbose("Cannot read /proc/loadavg. Skipping");
+
+        eval {
+            open(my $f,'/proc/meminfo');
+            my @lines = <$f>;
+            close($f);
+
+            for my $line (@lines) {
+                my @tokens = split ' ', $line;
+                my $param_name = lc $tokens[0];
+                $param_name =~ s/://;
+                my $param_value = $tokens[1];
+                if ($param_name eq "memtotal"){
+                    $status_dict{"os_mem_total_kb"} = $param_value;
+                }
+                elsif ($param_name eq "memfree"){
+                    $status_dict{"os_mem_free_kb"} = $param_value;
+                }
+                elsif ($param_name eq "active"){
+                    $status_dict{"os_mem_active_kb"} = $param_value;
+                }
+                elsif ($param_name eq "swaptotal"){
+                    $status_dict{"os_swap_total_kb"} = $param_value;
+                }
+                elsif ($param_name eq "swapfree"){
+                    $status_dict{"os_swap_free_kb"} = $param_value;
+                }
+            }
+            verbose("OS mem info recorded")
+
+        } or verbose('Cannot read /proc/meminfo. Skipping');
+
+        # Filesystems:
+        eval {
+            $status_dict{"os_root_mountpoint_usage_percent"} = get_mountpoint_usage_percent("/");
+            $status_dict{"os_datadir_mountpoint_usage_percent"} = get_mountpoint_usage_percent($extra_dict{"datadir"});
+            $status_dict{"os_tmpdir_mountpoint_usage_percent"} = get_mountpoint_usage_percent(extra_dict{"tmpdir"});
+            verbose("OS mountpoints info recorded");
+        } or verbose("Cannot read mountpoints info. Skipping");
+
+        eval {
+            my ($pgpgin, $pgpgout, $pswpin, $pswpout) = get_page_io_activity();
+
+        } or  verbose("Cannot read page io activity. Skipping")
+
+
+        #TODO
+
+    }
+
+
+          #TODO
+
+    return %status_dict;
+
+}
+
+=head2 get_status_variables_columns
+
+    Return all columns participating in the status variables table. Most of these are STATUS variables.
+    Others are parameters. Others yet represent slave or master status etc.
+
+=cut
+
+sub get_status_variables_columns{
+    my %status = fetch_status_variables();
+    my @status_name =  sort {$a cmp $b} (keys %status);
+    return @status_name;
+}
+
+
+
+=head2 create_status_variables_table
+
+=cut
+
+sub create_status_variables_table{
+    my $columns_listing = '';
+    for my $column_name (get_status_variables_columns()) {
+        my $column_sign_indicator = get_column_sign_indicator($column_name);
+        $columns_listing .= "$column_name BIGINT $column_sign_indicator\n";
+    }
+
+    my $query = <<EOF;
+        CREATE TABLE $options{database}.$table_name (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            $columns_listing,
+            UNIQUE KEY ts (ts)
+       )
+EOF
+
+    my $table_created = 0;
+    eval {
+        act_query($query);
+        $table_created = 1;
+        verbose("$table_name table created");
+        1;
+    } or verbose("table_name table exists");
+
+    return $table_created;
+
+}
+
+=head2 upgrade_status_variables_table
+
+=cut
+
+sub upgrade_status_variables_table{
+    # TODO
+
+}
+
 =head2 deploy_schema
 
 deploy the schema
@@ -714,6 +1403,10 @@ sub deploy_schema{
     create_html_components_table();
     create_custom_query_table();
     create_custom_query_view();
+    fetch_status_variables();
+    #if(not create_status_variables_table()){
+    #    upgrade_status_variables_table;
+    #}
 
 }
 
@@ -744,8 +1437,6 @@ sub run {
 
 
 
-    my $database_name = $options{database};
-    my $table_name = "status_variables";
 
 
     # Open connections. From this point and on, database access is possible
