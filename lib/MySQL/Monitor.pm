@@ -1102,8 +1102,23 @@ sub should_monitor_os{
 
 sub get_page_io_activity{
 
-    #TODO
+    open(my $vmstat_file, "</proc/vmstat");
+    my @lines = <$vmstat_file>;
+    close($vmstat_file);
 
+    my %vmstat_dict;
+    for my $line (@lines){
+        my @tokens = split(" ", $line);
+        $vmstat_dict{$tokens[0]} = $tokens[1];
+    }
+
+    my ($pgpgin, $pgpgout, $pswpin, $pswpout);
+    $pgpgin = $vmstat_dict{pgpgin} ? int($vmstat_dict{pgpgin}) : undef;
+    $pgpgout = $vmstat_dict{pgpgout} ? int($vmstat_dict{"pgpgout"}) : undef;
+    $pswpin = $vmstat_dict{pswpin} ? int($vmstat_dict{pswpin}) : undef;
+    $pswpout = $vmstat_dict{pswpout} ? int($vmstat_dict{pswpout}) : undef;
+
+    return ($pgpgin, $pgpgout, $pswpin, $pswpout);
 }
 
 =head2 get_mountpoint_usage_percent(path):
@@ -1318,17 +1333,20 @@ sub fetch_status_variables{
 
         eval {
             my ($pgpgin, $pgpgout, $pswpin, $pswpout) = get_page_io_activity();
+            $status_dict{"os_page_ins"} = $pgpgin;
+            $status_dict{"os_page_outs"} = $pgpgout;
+            $status_dict{"os_swap_ins"} = $pswpin;
+            $status_dict{"os_swap_outs"} = $pswpout;
 
-        } or  verbose("Cannot read page io activity. Skipping")
+            verbose("OS page io activity recorded") ;
 
+        } or  verbose("Cannot read page io activity. Skipping");
 
-        #TODO
 
     }
 
-
-          #TODO
-
+    verbose("Non-local monitoring; will not read OS data");
+    
     return %status_dict;
 
 }
@@ -1356,14 +1374,14 @@ sub create_status_variables_table{
     my $columns_listing = '';
     for my $column_name (get_status_variables_columns()) {
         my $column_sign_indicator = get_column_sign_indicator($column_name);
-        $columns_listing .= "$column_name BIGINT $column_sign_indicator\n";
+        $columns_listing .= "$column_name BIGINT $column_sign_indicator,\n";
     }
 
     my $query = <<EOF;
         CREATE TABLE $options{database}.$table_name (
             id INT AUTO_INCREMENT PRIMARY KEY,
             ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            $columns_listing,
+            $columns_listing
             UNIQUE KEY ts (ts)
        )
 EOF
@@ -1374,10 +1392,21 @@ EOF
         $table_created = 1;
         verbose("$table_name table created");
         1;
-    } or verbose("table_name table exists");
+    } or verbose("$table_name table exists");
 
     return $table_created;
 
+}
+
+=head2 column_name_relates_to_custom_query
+
+=cut
+
+sub column_name_relates_to_custom_query {
+    my $column_name = shift;
+    return 1 if ($column_name =~ /^custom_\d+$/);
+    return 1 if ($column_name =~ /^custom_\d+_time$/);
+    return 0;
 }
 
 =head2 upgrade_status_variables_table
@@ -1385,8 +1414,38 @@ EOF
 =cut
 
 sub upgrade_status_variables_table{
-    # TODO
+    # I currently prefer SHOW COLUMNS over using INFORMATION_SCHEMA because of the time it takes
+    # to access the INFORMATION_SCHEMA.COLUMNS table.
 
+    my $query = "show columns from $database_name.$table_name";
+    my @existing_columns = map {$_->{Field}} get_rows($query, $write_conn);
+
+    my @columns = get_status_variables_columns();
+    my %m_existing_columns = map {$_ => 1} @existing_columns;
+    my %m_columns = map {$_ => 1} @columns;
+    my @new_columns = grep {! $m_existing_columns{$_}} @columns;
+
+    my @redundant_custom_columns = grep {! $m_columns{$_} && column_name_relates_to_custom_query($_) } @existing_columns;
+
+    my @alter_statement;
+
+    if (@new_columns) {
+        verbose("Will add the following columns to $table_name: " . join ", ", @new_columns);
+        push @alter_statement, map {my $s = get_column_sign_indicator($_); "ADD COLUMN $_ BIGINT $s"} @new_columns;
+    }
+
+    if (@redundant_custom_columns){
+        verbose("Will remove the following columns from $table_name: " . join(", ", @redundant_custom_columns));
+        push @alter_statement, map {"DROP COLUMN $_"} @redundant_custom_columns;
+    }
+
+    if(@alter_statement){
+        $query = "ALTER TABLE $database_name.$table_name \n" .  join "\n", @alter_statement;
+        act_query($query);
+        verbose("status_variables table upgraded");
+    }
+
+    return scalar @alter_statement;
 }
 
 =head2 deploy_schema
@@ -1403,10 +1462,10 @@ sub deploy_schema{
     create_html_components_table();
     create_custom_query_table();
     create_custom_query_view();
-    fetch_status_variables();
-    #if(not create_status_variables_table()){
-    #    upgrade_status_variables_table;
-    #}
+    #fetch_status_variables();
+    if(not create_status_variables_table()){
+        upgrade_status_variables_table;
+    }
 
 }
 
