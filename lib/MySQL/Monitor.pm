@@ -1421,11 +1421,11 @@ sub upgrade_status_variables_table{
     my @existing_columns = map {$_->{Field}} get_rows($query, $write_conn);
 
     my @columns = get_status_variables_columns();
-    my %m_existing_columns = map {$_ => 1} @existing_columns;
-    my %m_columns = map {$_ => 1} @columns;
-    my @new_columns = grep {! $m_existing_columns{$_}} @columns;
+    my %h_existing_columns = map {$_ => 1} @existing_columns;
+    my %h_columns = map {$_ => 1} @columns;
+    my @new_columns = grep {! $h_existing_columns{$_}} @columns;
 
-    my @redundant_custom_columns = grep {! $m_columns{$_} && column_name_relates_to_custom_query($_) } @existing_columns;
+    my @redundant_custom_columns = grep {! $h_columns{$_} && column_name_relates_to_custom_query($_) } @existing_columns;
 
     my @alter_statement;
 
@@ -1448,6 +1448,226 @@ sub upgrade_status_variables_table{
     return scalar @alter_statement;
 }
 
+
+=head2 create_alert_condition_table
+
+=cut
+
+sub create_alert_condition_table{
+    my $query = <<QUERY;
+        CREATE TABLE IF NOT EXISTS $database_name.alert_condition (
+          alert_condition_id INT UNSIGNED AUTO_INCREMENT,
+          enabled BOOL NOT NULL DEFAULT 1,
+          condition_eval VARCHAR(4095) CHARSET utf8 COLLATE utf8_bin NOT NULL,
+          description VARCHAR(255) CHARSET utf8 COLLATE utf8_bin DEFAULT NULL,
+          error_level ENUM('debug', 'info', 'warning', 'error', 'critical') NOT NULL DEFAULT 'error',
+          alert_delay_minutes SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+          repetitive_alert BOOL NOT NULL DEFAULT 0,
+          PRIMARY KEY (alert_condition_id)
+        )
+QUERY
+
+    eval {
+        act_query($query);
+        verbose("alert_condition table created");
+        1;
+    } or die "Cannot create table $database_name.alert_condition: $@";
+}
+
+
+=head2 create_alert_table
+
+=cut
+
+sub create_alert_table {
+    my $query = <<QUERY;
+        CREATE TABLE IF NOT EXISTS $database_name.alert (
+          `alert_id` INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+          `alert_condition_id` INT(11) UNSIGNED NOT NULL,
+          `sv_report_sample_id` INT(11) DEFAULT NULL,
+          PRIMARY KEY (`alert_id`),
+          UNIQUE KEY `alert_condition_sv_report_sample` (`sv_report_sample_id`, `alert_condition_id`),
+          KEY `alert_condition_id` (`alert_condition_id`)
+        )
+QUERY
+
+
+    eval {
+        act_query($query);
+        verbose("alert table created");
+        1
+    } or die "Cannot create table $database_name.alert: $@";
+}
+
+
+=head2 create_alert_pending_table
+
+=cut
+
+sub create_alert_pending_table{
+    my $query = <<QUERY;
+        CREATE TABLE IF NOT EXISTS $database_name.alert_pending (
+          alert_pending_id INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+          alert_condition_id INT(11) UNSIGNED NOT NULL,
+          sv_report_sample_id_start INT(11) DEFAULT NULL,
+          sv_report_sample_id_end INT(11) DEFAULT NULL,
+          ts_notified DATETIME DEFAULT NULL,
+          resolved BOOL NOT NULL DEFAULT 0,
+          PRIMARY KEY (`alert_pending_id`),
+          UNIQUE KEY (`alert_condition_id`)
+        )
+QUERY
+
+    eval {
+        act_query($query);
+        verbose("alert_pending table created");
+        1;
+    } or die ("Cannot create table $database_name.alert_pending");
+  }
+
+
+=head2 create_status_variables_latest_view
+
+=cut
+
+sub create_status_variables_latest_view {
+    my $query = <<EOF;
+        CREATE
+        OR REPLACE
+        ALGORITHM = TEMPTABLE
+        DEFINER = CURRENT_USER
+        SQL SECURITY INVOKER
+        VIEW ${database_name}.sv_latest AS
+          SELECT
+            MAX(id) AS id_latest,
+            MAX(ts) AS ts_latest
+          FROM
+            ${database_name}.${table_name}
+EOF
+
+    act_query($query);
+
+    verbose("sv_latest view created")
+}
+
+=head2 get_variables_and_status_columns
+
+=cut
+
+sub get_variables_and_status_columns{
+    my @variables_columns = get_global_variables();
+    my %h_variables_columns = map {$_ => 1} @variables_columns;
+    my @status_columns = grep {! $h_variables_columns{$_}} get_status_variables_columns();
+    return (\@variables_columns, \@status_columns);
+}
+
+=head2 create_status_variables_diff_view
+
+=cut
+
+sub create_status_variables_diff_view{
+    my ($global_variables, $status_columns) = get_variables_and_status_columns();
+    my $status_variables_table_name = $table_name;
+    my $status_variables_table_alias = $table_name;
+    # Global variables are used as-is
+    my $global_variables_columns_listing = 
+      join ",\n", 
+        map " ${status_variables_table_alias}2.$_ AS $_", 
+          @$global_variables;
+    # status variables as they were:
+    my $status_columns_listing = 
+      join ",\n", 
+        map " ${status_variables_table_alias}2.$_ AS $_", 
+          @$status_columns;
+    # Status variables are diffed. This does not make sense for all of them, but we do it for all nonetheless.
+    my $diff_signed_columns_listing = 
+      join ",\n", 
+        map " ${status_variables_table_alias}2.$_ - ${status_variables_table_alias}1.$_ AS ${_}_diff", 
+          grep {is_signed_column($_)} @$status_columns;
+    # When either sv1's or sv2's variable is NULL, the IF condition fails and we do the "-" math, leading again to NULL. 
+    # I *want* the diff to be NULL. This makes more sense than choosing sv2's value.
+    my $diff_unsigned_columns_listing = 
+      join ",\n",
+        map " IF(${status_variables_table_alias}2.$_ < ${status_variables_table_alias}1.$_, ${status_variables_table_alias}2.$_, ${status_variables_table_alias}2.$_ - ${status_variables_table_alias}1.$_) AS ${_}_diff",
+          grep {! is_signed_column($_)} @$status_columns;
+
+    my $query = <<QUERY;
+        CREATE
+        OR REPLACE
+        ALGORITHM = MERGE
+        DEFINER = CURRENT_USER
+        SQL SECURITY INVOKER
+        VIEW ${database_name}.sv_diff AS
+          SELECT
+            ${status_variables_table_name}2.id,
+            ${status_variables_table_name}2.ts,
+            TIMESTAMPDIFF(SECOND, ${status_variables_table_name}1.ts, ${status_variables_table_name}2.ts) AS ts_diff_seconds,
+            $status_columns_listing,
+            $diff_signed_columns_listing,
+            $diff_unsigned_columns_listing,
+            $global_variables_columns_listing
+          FROM
+            ${database_name}.${status_variables_table_name} AS ${status_variables_table_alias}2
+            INNER JOIN ${database_name}.${status_variables_table_name} AS ${status_variables_table_alias}1
+            ON (${status_variables_table_alias}1.id = ${status_variables_table_alias}2.id-GREATEST(1, IFNULL(${status_variables_table_alias}2.auto_increment_increment, 1)))
+QUERY
+
+    act_query($query);
+    verbose("sv_diff view created")
+}
+
+=head2 create_status_variables_sample_view
+
+=cut
+
+sub create_status_variables_sample_view{
+    my ($global_variables, $status_columns) = get_variables_and_status_columns();
+
+    my $global_variables_columns_listing = join ",\n", map "$_", @$global_variables;
+    my $status_columns_listing = join ",\n", map " $_", @$status_columns;
+    my $diff_columns_listing = join ",\n", map " ${_}_diff", @$status_columns;
+    my $change_psec_columns_listing = join ",\n", map " ROUND(${_}_diff/ts_diff_seconds, 2) AS ${_}_psec", @$status_columns;
+
+    my $query = <<QUERY;
+        CREATE
+        OR REPLACE
+        ALGORITHM = MERGE
+        DEFINER = CURRENT_USER
+        SQL SECURITY INVOKER
+        VIEW ${database_name}.sv_sample AS
+          SELECT
+            id,
+            ts,
+            ts_diff_seconds,
+            $status_columns_listing,
+            $diff_columns_listing,
+            $change_psec_columns_listing,
+            $global_variables_columns_listing
+          FROM
+            ${database_name}.sv_diff
+QUERY
+
+    act_query($query);
+
+    verbose("sv_sample view created");
+}
+
+
+=head2 create_status_variables_views_and_aggregations
+
+=cut
+
+sub create_status_variables_views_and_aggregations {
+    # General status variables views:
+    create_status_variables_latest_view();
+    create_status_variables_diff_view();
+    create_status_variables_sample_view();
+
+      #TODO
+
+}
+
+
 =head2 deploy_schema
 
 deploy the schema
@@ -1466,7 +1686,10 @@ sub deploy_schema{
     if(not create_status_variables_table()){
         upgrade_status_variables_table;
     }
-
+    create_alert_condition_table();
+    create_alert_table();
+    create_alert_pending_table();
+    create_status_variables_views_and_aggregations();
 }
 
 

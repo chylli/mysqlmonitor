@@ -5,5 +5,4 @@ use strict;
 use warnings;
 use MySQL::Monitor;
 
-my $monitor = MySQL::Monitor->new;
-$monitor->run(@ARGV);
+MySQL::Monitor::run(@ARGV);

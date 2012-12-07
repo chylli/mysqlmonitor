@@ -1,4 +1,4 @@
-#!perl -T
+#!perl
 use 5.16.2;
 use strict;
 use warnings FATAL => 'all';
@@ -6,6 +6,7 @@ use Test::More qw(no_plan);
 #use Test::Output;
 use MySQL::Monitor;
 use DBI;
+use List::MoreUtils qw(any);
 
 sub do_query{
     my ($dbh, $query) = @_;
@@ -44,3 +45,20 @@ is(do_query($write_dbh,'select count(*) from testmonitor.html_components'),1,"ta
 is(do_query($write_dbh,'select count(*) from testmonitor.custom_query'),0,"table custom_query created");
 is(do_query($write_dbh,'select count(*) from testmonitor.custom_query_view'),0,"table custom_query created");
 
+is(MySQL::Monitor::get_column_sign_indicator("innodb_buffer_pool_pages_total"), "SIGNED", "get_column_sign_indicator is ok");
+
+is(MySQL::Monitor::get_column_sign_indicator("abcdefgh"), "UNSIGNED", "get_column_sign_indicator is ok");
+
+is(MySQL::Monitor::should_monitor_os(), 1, "should_monitor_os() ok");
+
+my @cols = MySQL::Monitor::get_status_variables_columns();
+is((any {$_ eq 'queries'} @cols), 1, "get_status_variables_columns ok");
+
+is(MySQL::Monitor::normalize_variable_value('Innodb_have_atomic_builtins', 'on'), 1, "normalize_variable_value ok");
+is(do_query($write_dbh,'select count(*) from testmonitor.status_variables'),0,"table status_variables created");
+is(do_query($write_dbh,'select count(*) from testmonitor.alert_condition'),0,"table alert_condition created");
+is(do_query($write_dbh,'select count(*) from testmonitor.alert'),0,"table alert created");
+is(do_query($write_dbh,'select count(*) from testmonitor.alert_pending'),0,"table alert_pending created");
+is(do_query($write_dbh,'select count(*) from testmonitor.sv_latest'),1,"view sv_latest created");
+is(do_query($write_dbh,'select count(*) from testmonitor.sv_diff'),0,"view sv_diff created");
+is(do_query($write_dbh,'select count(*) from testmonitor.sv_sample'),0,"view sv_sample created");
